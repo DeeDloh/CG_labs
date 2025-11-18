@@ -19,8 +19,8 @@ constexpr float camera_near_plane = 0.01f;
 constexpr float camera_far_plane = 100.0f;
 
 struct Vertex {
-	veekay::vec3 position;
-	// NOTE: You can add more attributes
+    veekay::vec3 position;
+    veekay::vec3 color;  // Закомментируйте пока что
 };
 
 // NOTE: These variable will be available to shaders through push constant uniform
@@ -43,6 +43,19 @@ veekay::vec3 model_position = {0.0f, 0.0f, 5.0f};
 float model_rotation;
 veekay::vec3 model_color = {0.5f, 1.0f, 0.7f };
 bool model_spin = true;
+float view_angle = 0.0f;  // Угол для вида сбоку (в радианах)
+
+
+// Параметры для дочерней пирамиды
+veekay::vec3 child_offset = {2.0f, 0.0f, 5.0f};  // Смещение относительно родительской
+float child_scale = 0.5f;                        // Масштаб дочерней пирамиды
+
+// Для управления анимацией
+bool animation_paused = false;
+bool animation_reversed = false;
+float animation_speed = 1.0f;
+double accumulated_time = 0.0;
+double last_time = 0.0;
 
 // NOTE: Loads shader byte code from file
 // NOTE: Your shaders are compiled via CMake with this code too, look it up
@@ -116,14 +129,19 @@ void initialize() {
 		// NOTE: Declare vertex attributes
 		VkVertexInputAttributeDescription attributes[] = {
 			{
-				.location = 0, // NOTE: First attribute
-				.binding = 0, // NOTE: First vertex buffer
-				.format = VK_FORMAT_R32G32B32_SFLOAT, // NOTE: 3-component vector of floats
-				.offset = offsetof(Vertex, position), // NOTE: Offset of "position" field in a Vertex struct
+				.location = 0,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = offsetof(Vertex, position),
+			},
+			{
+				.location = 1,  // Атрибут цвета
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = offsetof(Vertex, color),
 			},
 		};
-
-		// NOTE: Bring 
+		// NOTE: Bring
 		VkPipelineVertexInputStateCreateInfo input_state_info{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 			.vertexBindingDescriptionCount = 1,
@@ -145,7 +163,7 @@ void initialize() {
 		VkPipelineRasterizationStateCreateInfo raster_info{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 			.polygonMode = VK_POLYGON_MODE_FILL,
-			.cullMode = VK_CULL_MODE_BACK_BIT,
+			.cullMode = VK_CULL_MODE_NONE, // Доя корректного отображения дна квадрата
 			.frontFace = VK_FRONT_FACE_CLOCKWISE,
 			.lineWidth = 1.0f,
 		};
@@ -231,7 +249,7 @@ void initialize() {
 			veekay::app.running = false;
 			return;
 		}
-		
+
 		VkGraphicsPipelineCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount = 2,
@@ -266,13 +284,48 @@ void initialize() {
 	//  |       \  |
 	// (v3)------(v2)
 	Vertex vertices[] = {
-		{{-1.0f, -1.0f, 0.0f}},
-		{{1.0f, -1.0f, 0.0f}},
-		{{1.0f, 1.0f, 0.0f}},
-		{{-1.0f, 1.0f, 0.0f}},
+		// Основание пирамиды - 2 треугольника (синий)
+		{{-1.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f}}, // v0
+		{{1.0f, 0.0f, -1.0f},  {0.0f, 0.0f, 1.0f}}, // v1
+		{{1.0f, 0.0f, 1.0f},   {0.0f, 0.0f, 1.0f}}, // v2
+
+		{{1.0f, 0.0f, 1.0f},   {0.0f, 0.0f, 1.0f}}, // v3
+		{{-1.0f, 0.0f, 1.0f},  {0.0f, 0.0f, 1.0f}}, // v4
+		{{-1.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f}}, // v5
+
+		// Задняя грань - красный
+		{{-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, 0.0f}}, // v6
+		{{1.0f, 0.0f, -1.0f},  {1.0f, 0.0f, 0.0f}}, // v7
+		{{0.0f, -1.5f, 0.0f},   {1.0f, 0.0f, 0.0f}}, // v8
+
+		// Правая грань - зеленый
+		{{1.0f, 0.0f, -1.0f},  {0.0f, 1.0f, 0.0f}}, // v9
+		{{1.0f, 0.0f, 1.0f},   {0.0f, 1.0f, 0.0f}}, // v10
+		{{0.0f, -1.5f, 0.0f},   {0.0f, 1.0f, 0.0f}}, // v11
+
+		// Передняя грань - желтый
+		{{1.0f, 0.0f, 1.0f},   {1.0f, 1.0f, 0.0f}}, // v12
+		{{-1.0f, 0.0f, 1.0f},  {1.0f, 1.0f, 0.0f}}, // v13
+		{{0.0f, -1.5f, 0.0f},   {1.0f, 1.0f, 0.0f}}, // v14
+
+		// Левая грань - фиолетовый
+		{{-1.0f, 0.0f, 1.0f},  {1.0f, 0.0f, 1.0f}}, // v15
+		{{-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, 1.0f}}, // v16
+		{{0.0f, -1.5f, 0.0f},   {1.0f, 0.0f, 1.0f}}, // v17
 	};
 
-	uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+	// Индексы для треугольников: основание + 4 боковых грани
+	uint32_t indices[] = {
+		// Основание (2 треугольника)
+		0, 1, 2,
+		3, 4, 5,
+
+		// Боковые грани (по 1 треугольнику каждая)
+		6, 7, 8,    // Задняя
+		9, 10, 11,  // Правая
+		12, 13, 14, // Передняя
+		15, 16, 17  // Левая
+	};
 
 	vertex_buffer = new veekay::graphics::Buffer(sizeof(vertices), vertices,
 	                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -295,19 +348,67 @@ void shutdown() {
 }
 
 void update(double time) {
+    // Вычисляем дельту времени
+    double delta_time = time - last_time;
+    last_time = time;
+
+    // Накопление времени только если анимация не на паузе
+    if (!animation_paused) {
+        accumulated_time += delta_time * animation_speed * (animation_reversed ? -1.0 : 1.0);
+    }
+
 	ImGui::Begin("Controls:");
 	ImGui::InputFloat3("Translation", reinterpret_cast<float*>(&model_position));
 	ImGui::SliderFloat("Rotation", &model_rotation, 0.0f, 2.0f * M_PI);
-	ImGui::Checkbox("Spin?", &model_spin);
-	// TODO: Your GUI stuff here
-	ImGui::End();
+
+    // Управление анимацией
+    ImGui::Separator();
+    ImGui::Text("Animation Control:");
+
+    // Кнопка паузы/возобновления
+    if (ImGui::Button(animation_paused ? "Resume" : "Pause")) {
+        animation_paused = !animation_paused;
+    }
+
+    // Кнопка реверса направления
+    ImGui::SameLine();
+    if (ImGui::Button(animation_reversed ? "Forward" : "Reverse")) {
+        animation_reversed = !animation_reversed;
+    }
+
+    // Слайдер скорости анимации
+    ImGui::SliderFloat("Animation Speed", &animation_speed, 0.0f, 3.0f, "%.1f");
+
+    // Кнопка сброса анимации
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+        accumulated_time = 0.0;
+        animation_paused = false;
+        animation_reversed = false;
+        animation_speed = 1.0f;
+    }
+
+
+
+	// ImGui::Checkbox("Spin?", &model_spin);
+    // Слайдер для вида сбоку (в градусах)
+    ImGui::SliderFloat("View Angle", &view_angle, -90.0f, 90.0f, "%.1f deg");
+
+    // UI для дочерней пирамиды
+    ImGui::Separator();
+    ImGui::Text("Child Pyramid:");
+    ImGui::SliderFloat("Child Scale", &child_scale, 0.1f, 2.0f, "%.2f"); // диапазон до 2.0
+    ImGui::InputFloat3("Child Offset", reinterpret_cast<float*>(&child_offset)); // смещение
+
+    ImGui::End();
+
 
 	// NOTE: Animation code and other runtime variable updates go here
-	if (model_spin) {
-		model_rotation = float(time);
-	}
+    if (!animation_paused) {
+        model_rotation = fmodf(float(accumulated_time), 2.0f * M_PI);
+    }
+    // model_rotation = fmodf(model_rotation, 2.0f * M_PI);
 
-	model_rotation = fmodf(model_rotation, 2.0f * M_PI);
 }
 
 void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
@@ -360,16 +461,20 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		vkCmdBindIndexBuffer(cmd, index_buffer->buffer, offset, VK_INDEX_TYPE_UINT32);
 
 		// NOTE: Variables like model_XXX were declared globally
+		veekay::mat4 base_transform =
+			veekay::mat4::rotation({1.0f, 0.0f, 0.0f}, view_angle * M_PI / 180.0f) *
+			veekay::mat4::rotation({0.0f, 1.0f, 0.0f}, model_rotation) *
+			veekay::mat4::translation(model_position);
+
 		ShaderConstants constants{
 			.projection = veekay::mat4::projection(
 				camera_fov,
 				float(veekay::app.window_width) / float(veekay::app.window_height),
 				camera_near_plane, camera_far_plane),
 
-			.transform = veekay::mat4::rotation({0.0f, 1.0f, 0.0f}, model_rotation) *
-			             veekay::mat4::translation(model_position),
+			.transform = base_transform,
 
-			.color = model_color,
+			.color = {0.0f, 1.0f, 0.0f}, // Ярко-зеленый для родительской
 		};
 
 		// NOTE: Update constant memory with new shader constants
@@ -377,8 +482,35 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		                   0, sizeof(ShaderConstants), &constants);
 
-		// NOTE: Draw 6 indices (3 vertices * 2 triangles), 1 group, no offsets
-		vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+		// NOTE: Draw 18 indices (6 треугольников * 3 вершины), 1 group, no offsets
+		vkCmdDrawIndexed(cmd, 18, 1, 0, 0, 0);
+
+
+		// ДОЧЕРНЯЯ пирамиду
+		float test_scale = 0.3f; // Фиксированный маленький масштаб
+
+
+		ShaderConstants child_constants{
+			.projection = veekay::mat4::projection(
+				camera_fov,
+				float(veekay::app.window_width) / float(veekay::app.window_height),
+				camera_near_plane, camera_far_plane),
+
+			.transform = veekay::mat4::scaling({child_scale, child_scale, child_scale}) * // слайдер для масштаба
+						 veekay::mat4::rotation({1.0f, 0.0f, 0.0f}, view_angle * M_PI / 180.0f) *
+						 veekay::mat4::rotation({0.0f, 1.0f, 0.0f}, model_rotation) *
+
+						 veekay::mat4::translation(child_offset),                    // родительские преобразования
+
+
+			.color = {1.0f, 0.0f, 0.0f}, // Ярко-красный для дочерней
+		};
+
+		vkCmdPushConstants(cmd, pipeline_layout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						0, sizeof(ShaderConstants), &child_constants);
+
+		vkCmdDrawIndexed(cmd, 18, 1, 0, 0, 0);
 	}
 
 	vkCmdEndRenderPass(cmd);
