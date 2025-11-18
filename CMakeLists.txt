@@ -33,7 +33,7 @@ FetchContent_Declare(
 FetchContent_Declare(
 	vk-bootstrap
 	GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap
-	GIT_TAG v1.4.321
+	GIT_TAG v1.4.313
 )
 
 FetchContent_Declare(
