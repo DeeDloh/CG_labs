@@ -12,7 +12,8 @@ layout (binding = 0, std140) uniform SceneUniforms {
     mat4 view_projection;
     float ambient_intensity;
     uint point_light_count;
-    float _pad1, _pad2;
+    uint spotlight_count;
+    float _pad1;
     
     vec3 light_direction;
     float _pad3;

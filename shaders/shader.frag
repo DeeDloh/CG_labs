@@ -10,7 +10,8 @@ layout (binding = 0, std140) uniform SceneUniforms {
     mat4 view_projection;
     float ambient_intensity;
     uint point_light_count;
-    float _pad1, _pad2;
+    uint spotlight_count;
+    float _pad1;
     
     vec3 light_direction;
     float _pad3;
@@ -37,9 +38,25 @@ struct PointLight {
     float intensity;
 };
 
+struct Spotlight {
+    vec3 position;
+    float _pad0;
+    vec3 direction;
+    float _pad1;
+    vec3 color;
+    float intensity;
+    float inner_cutoff;  // cos(inner_angle)
+    float outer_cutoff;  // cos(outer_angle)
+    float _pad2, _pad3;
+};
+
 layout (binding = 2, std430) readonly buffer PointLights {
     PointLight lights[];
 } point_lights;
+
+layout (binding = 3, std430) readonly buffer SpotLights {
+    Spotlight lights[];
+} spot_lights;
 
 void main() {
     vec3 normal = normalize(f_normal);
@@ -80,9 +97,41 @@ void main() {
         
         point_lighting += point_diffuse + point_specular;
     }
-    
+
+    // NOTE: Spotlights contribution
+    vec3 spotlight_lighting = vec3(0.0);
+    for (uint i = 0; i < scene.spotlight_count; ++i) {
+        Spotlight light = spot_lights.lights[i];
+        
+        vec3 light_dir = light.position - f_position;
+        float distance = length(light_dir);
+        light_dir = normalize(light_dir);
+        
+        // NOTE: Check if fragment is within spotlight cone
+        float theta = dot(light_dir, normalize(-light.direction));
+        float epsilon = light.inner_cutoff - light.outer_cutoff;
+        float spot_intensity = clamp((theta - light.outer_cutoff) / epsilon, 0.0, 1.0);
+        
+        // NOTE: Distance attenuation
+        float attenuation = light.intensity / (distance * distance + 0.01);
+        
+        // NOTE: Combine spot and distance attenuation
+        float total_attenuation = attenuation * spot_intensity;
+        
+        // NOTE: Diffuse
+        float spot_diff = max(dot(normal, light_dir), 0.0);
+        vec3 spot_diffuse = spot_diff * total_attenuation * light.color * object.albedo_color;
+        
+        // NOTE: Specular
+        vec3 spot_halfway = normalize(light_dir + view_dir);
+        float spot_spec = pow(max(dot(normal, spot_halfway), 0.0), object.shininess);
+        vec3 spot_specular = spot_spec * total_attenuation * light.color * object.specular_color;
+        
+        spotlight_lighting += spot_diffuse + spot_specular;
+    }
+
     // NOTE: Combine all lighting
-    vec3 result = ambient + diffuse + specular + point_lighting;
+    vec3 result = ambient + diffuse + specular + point_lighting + spotlight_lighting;
     
     final_color = vec4(result, 1.0);
 }

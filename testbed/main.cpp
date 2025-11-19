@@ -16,18 +16,29 @@ namespace {
 
 constexpr uint32_t max_models = 1024;
 
+enum class CameraMode {
+    LookAt,
+    Transform
+};
+
+struct CameraState {
+    veekay::vec3 position;
+    veekay::vec3 rotation;
+};
+
 struct Vertex {
-	veekay::vec3 position;
-	veekay::vec3 normal;
-	veekay::vec2 uv;
-	// NOTE: You can add more attributes
+    veekay::vec3 position;
+    veekay::vec3 normal;
+    veekay::vec2 uv;
+    // NOTE: You can add more attributes
 };
 
 struct SceneUniforms {
 	veekay::mat4 view_projection;
 	float ambient_intensity;
 	uint32_t point_light_count;
-    float _pad1, _pad2; // NOTE: Padding for alignment
+	uint32_t spotlight_count; 
+    float _pad1; // NOTE: Padding for alignment
 
 	veekay::vec3 light_direction; // NOTE: Direction TO the light (normalized)
     float _pad3;
@@ -43,6 +54,19 @@ struct PointLight {
     float _pad0;
     veekay::vec3 color;
     float intensity;
+};
+
+
+struct Spotlight {
+    veekay::vec3 position;
+    float _pad0;
+    veekay::vec3 direction;
+    float _pad1;
+    veekay::vec3 color;
+    float intensity;
+    float inner_cutoff;  // cos(inner_angle)
+    float outer_cutoff;  // cos(outer_angle)
+    float _pad2, _pad3;
 };
 
 struct ModelUniforms {
@@ -128,6 +152,8 @@ inline namespace {
 	VkSampler texture_sampler;
 
 	std::vector<PointLight> point_lights;
+	std::vector<Spotlight> spotlights;
+	veekay::graphics::Buffer* spotlights_buffer;
 }
 
 float toRadians(float degrees) {
@@ -463,6 +489,12 @@ void initialize(VkCommandBuffer cmd) {
                     .descriptorCount = 1,
                     .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 },
+				{
+    				.binding = 3,
+    				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    				.descriptorCount = 1,
+    				.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				},
 			};
 
 			VkDescriptorSetLayoutCreateInfo info{
@@ -547,6 +579,14 @@ void initialize(VkCommandBuffer cmd) {
 	16 * sizeof(PointLight),
 	nullptr,
 	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	
+
+	spotlights_buffer = new veekay::graphics::Buffer(
+    8 * sizeof(Spotlight),  // 8 прожекторов
+    nullptr,
+    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+	);
+
 	// NOTE: This texture and sampler is used when texture could not be loaded
 	{
 		VkSamplerCreateInfo info{
@@ -587,6 +627,11 @@ void initialize(VkCommandBuffer cmd) {
                 .offset = 0,
                 .range = VK_WHOLE_SIZE,
             },
+			{
+				.buffer = spotlights_buffer->buffer,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE,
+			},
 		};
 
 		VkWriteDescriptorSet write_infos[] = {
@@ -617,6 +662,15 @@ void initialize(VkCommandBuffer cmd) {
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .pBufferInfo = &buffer_infos[2],
             },
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = descriptor_set,
+				.dstBinding = 3,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &buffer_infos[3],
+			},
 		};
 
 		vkUpdateDescriptorSets(device, sizeof(write_infos) / sizeof(write_infos[0]),
@@ -752,6 +806,15 @@ void initialize(VkCommandBuffer cmd) {
         .color = {1.0f, 1.0f, 1.0f},
         .intensity = 100.0f,
     });
+
+	spotlights.push_back(Spotlight{
+		.position = {0.0f, -3.0f, 0.0f},
+		.direction = {0.0f, 1.0f, 0.0f},  // Светит вверх
+		.color = {1.0f, 1.0f, 0.8f},      // Тёплый белый
+		.intensity = 50.0f,
+		.inner_cutoff = std::cos(toRadians(12.5f)),
+		.outer_cutoff = std::cos(toRadians(17.5f)),
+	});
 }
 
 // NOTE: Destroy resources here, do not cause leaks in your program!
@@ -768,6 +831,7 @@ void shutdown() {
 	delete plane_mesh.vertex_buffer;
 
     delete point_lights_buffer;
+	delete spotlights_buffer;
 	delete model_uniforms_buffer;
 	delete scene_uniforms_buffer;
 
@@ -831,6 +895,57 @@ void update(double time) {
             .intensity = 5.0f,
         });
     }
+
+    ImGui::Separator();
+
+    // NOTE: Spotlights control
+    ImGui::Text("Spotlights");
+
+    for (size_t i = 0; i < spotlights.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i + 1000)); // Offset ID to avoid collision
+        
+        if (ImGui::TreeNode("Spotlight", "Spotlight %zu", i)) {
+            ImGui::SliderFloat3("Position", &spotlights[i].position.x, -10.0f, 10.0f);
+            ImGui::SliderFloat3("Direction", &spotlights[i].direction.x, -1.0f, 1.0f);
+            ImGui::ColorEdit3("Color", &spotlights[i].color.x);
+            ImGui::SliderFloat("Intensity", &spotlights[i].intensity, 0.0f, 200.0f);
+            
+            // NOTE: Angle controls (in degrees)
+            static float inner_angle = 12.5f;
+            static float outer_angle = 17.5f;
+            
+            if (ImGui::SliderFloat("Inner Angle", &inner_angle, 0.0f, 89.0f)) {
+                spotlights[i].inner_cutoff = std::cos(toRadians(inner_angle));
+                if (outer_angle < inner_angle + 1.0f) outer_angle = inner_angle + 1.0f;
+            }
+            
+            if (ImGui::SliderFloat("Outer Angle", &outer_angle, inner_angle + 1.0f, 90.0f)) {
+                spotlights[i].outer_cutoff = std::cos(toRadians(outer_angle));
+            }
+            
+            if (ImGui::Button("Remove")) {
+                spotlights.erase(spotlights.begin() + i);
+                ImGui::TreePop();
+                ImGui::PopID();
+                break;
+            }
+            
+            ImGui::TreePop();
+        }
+        
+        ImGui::PopID();
+    }
+
+    if (spotlights.size() < 8 && ImGui::Button("Add Spotlight")) {
+        spotlights.push_back(Spotlight{
+            .position = {0.0f, -2.0f, 0.0f},
+            .direction = {0.0f, 1.0f, 0.0f},
+            .color = {1.0f, 1.0f, 1.0f},
+            .intensity = 50.0f,
+            .inner_cutoff = std::cos(toRadians(12.5f)),
+            .outer_cutoff = std::cos(toRadians(17.5f)),
+        });
+    }
     
     ImGui::Separator();
     
@@ -876,7 +991,7 @@ void update(double time) {
         if (keyboard::isKeyDown(keyboard::Key::q))
             camera.position -= up * 0.1f;
 
-        if (keyboard::isKeyDown(keyboard::Key::z))
+        if (keyboard::isKeyDown(keyboard::Key::e))
             camera.position += up * 0.1f;
     }
 
@@ -885,6 +1000,8 @@ void update(double time) {
         .view_projection = camera.view_projection(aspect_ratio),
         .ambient_intensity = ambient_intensity,
         .point_light_count = static_cast<uint32_t>(point_lights.size()),
+	    .spotlight_count = static_cast<uint32_t>(spotlights.size()),
+
 
         .light_direction = veekay::vec3::normalized({dir_light_dir[0], dir_light_dir[1], dir_light_dir[2]}),
         .light_color = {dir_light_color[0], dir_light_color[1], dir_light_color[2]},
@@ -922,6 +1039,12 @@ void update(double time) {
         std::memcpy(point_lights_buffer->mapped_region, point_lights.data(),
                     point_lights.size() * sizeof(PointLight));
     }
+
+	// 
+	if (!spotlights.empty()) {
+    std::memcpy(spotlights_buffer->mapped_region, spotlights.data(),
+                spotlights.size() * sizeof(Spotlight));
+}
 }
 
 void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
