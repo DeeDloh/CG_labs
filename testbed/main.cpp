@@ -104,15 +104,14 @@ struct Camera {
 
 	veekay::vec3 position = {};
 	veekay::vec3 rotation = {};
+    veekay::vec3 target = {0.0f, -0.5f, 0.0f};
+    bool is_look_at = true;
 
 	float fov = default_fov;
 	float near_plane = default_near_plane;
 	float far_plane = default_far_plane;
 
-	// NOTE: View matrix of camera (inverse of a transform)
 	veekay::mat4 view() const;
-
-	// NOTE: View and projection composition
 	veekay::mat4 view_projection(float aspect_ratio) const;
 };
 
@@ -123,6 +122,17 @@ inline namespace {
 	};
 
 	std::vector<Model> models;
+
+	// NOTE: Camera mode management
+    CameraMode current_camera_mode = CameraMode::LookAt;
+    CameraState saved_lookat_state{
+        .position = {0.0f, -0.5f, 10.0f},
+        .rotation = {0.0f, 0.0f, 0.0f}
+    };
+    CameraState saved_transform_state{
+        .position = {0.0f, -0.5f, 10.0f},
+        .rotation = {0.0f, 0.0f, 0.0f}
+    };
 }
 
 // NOTE: Vulkan objects
@@ -160,98 +170,78 @@ float toRadians(float degrees) {
 	return degrees * float(M_PI) / 180.0f;
 }
 
+// NOTE: Helper function to clamp values (C++11 compatible)
+template<typename T>
+T clamp(T value, T min_val, T max_val) {
+    return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
+}
+
 veekay::mat4 Transform::matrix() const {
-    // NOTE: Build scale matrix
-    veekay::mat4 scale_mat = veekay::mat4::identity();
-    scale_mat.elements[0][0] = scale.x;
-    scale_mat.elements[1][1] = scale.y;
-    scale_mat.elements[2][2] = scale.z;
-
-    // NOTE: Build rotation matrices (Euler angles)
-    float rx = toRadians(rotation.x);
-    float ry = toRadians(rotation.y);
-    float rz = toRadians(rotation.z);
-
-    // NOTE: Rotation around X axis
-    veekay::mat4 rot_x = veekay::mat4::identity();
-    rot_x.elements[1][1] = std::cos(rx);
-    rot_x.elements[1][2] = -std::sin(rx);
-    rot_x.elements[2][1] = std::sin(rx);
-    rot_x.elements[2][2] = std::cos(rx);
-
-    // NOTE: Rotation around Y axis
-    veekay::mat4 rot_y = veekay::mat4::identity();
-    rot_y.elements[0][0] = std::cos(ry);
-    rot_y.elements[0][2] = std::sin(ry);
-    rot_y.elements[2][0] = -std::sin(ry);
-    rot_y.elements[2][2] = std::cos(ry);
-
-    // NOTE: Rotation around Z axis
-    veekay::mat4 rot_z = veekay::mat4::identity();
-    rot_z.elements[0][0] = std::cos(rz);
-    rot_z.elements[0][1] = -std::sin(rz);
-    rot_z.elements[1][0] = std::sin(rz);
-    rot_z.elements[1][1] = std::cos(rz);
-
-    // NOTE: Translation matrix
     veekay::mat4 trans = veekay::mat4::translation(position);
+    veekay::mat4 rot_x = veekay::mat4::rotation({1.0f, 0.0f, 0.0f}, toRadians(rotation.x));
+    veekay::mat4 rot_y = veekay::mat4::rotation({0.0f, 1.0f, 0.0f}, toRadians(rotation.y));
+    veekay::mat4 rot_z = veekay::mat4::rotation({0.0f, 0.0f, 1.0f}, toRadians(rotation.z));
+    veekay::mat4 scale_mat = veekay::mat4::scaling(scale);
 
-    // NOTE: Combine: T * Ry * Rx * Rz * S
-    return trans * rot_y * rot_x * rot_z * scale_mat;
+    return trans * rot_z * rot_y * rot_x * scale_mat;
 }
 
 veekay::mat4 Camera::view() const {
-    // NOTE: Calculate forward direction from pitch and yaw
-    float pitch = toRadians(rotation.x);
-    float yaw = toRadians(rotation.y);
+	if (is_look_at) {
+		// NOTE: Calculate forward direction from pitch and yaw
+		float pitch = toRadians(rotation.x);
+		float yaw = toRadians(rotation.y);
 
-    veekay::vec3 forward{
-        std::sin(yaw),
-        -std::sin(pitch),
-        std::cos(yaw)
-    };
-    forward = veekay::vec3::normalized(forward);
+		veekay::vec3 forward{
+			std::sin(yaw),
+			-std::sin(pitch),
+			std::cos(yaw)
+		};
+		forward = veekay::vec3::normalized(forward);
 
-    // NOTE: World up vector (camera's local up is -Y in world space)
-    veekay::vec3 world_up{0.0f, -1.0f, 0.0f};
+		// NOTE: World up vector (camera's local up is -Y in world space)
+		veekay::vec3 world_up{0.0f, -1.0f, 0.0f};
 
-    // NOTE: Calculate right vector (perpendicular to forward and up)
-    veekay::vec3 right = veekay::vec3::cross(forward, world_up);
-	right = veekay::vec3::normalized(right);
-	right = right * -1.0f;
+		// NOTE: Calculate right vector (perpendicular to forward and up)
+		veekay::vec3 right = veekay::vec3::cross(forward, world_up);
+		right = veekay::vec3::normalized(right);
+		right = right * -1.0f;
 
-    // NOTE: Recalculate up vector (perpendicular to forward and right)
-    veekay::vec3 up = veekay::vec3::cross(right, forward);
-	// up = up * -1.0f;
-    // NOTE: Build look-at matrix manually
-    veekay::mat4 result = veekay::mat4::identity();
+		// NOTE: Recalculate up vector (perpendicular to forward and right)
+		veekay::vec3 up = veekay::vec3::cross(right, forward);
 
-    result.elements[0][0] = right.x;
-    result.elements[1][0] = right.y;
-    result.elements[2][0] = right.z;
-    result.elements[3][0] = -veekay::vec3::dot(right, position);
+		// NOTE: Build look-at view matrix manually
+		veekay::mat4 result = veekay::mat4::identity();
 
-    result.elements[0][1] = up.x;
-    result.elements[1][1] = up.y;
-    result.elements[2][1] = up.z;
-    result.elements[3][1] = -veekay::vec3::dot(up, position);
+		// NOTE: Set rotation part (basis vectors as rows)
+		result.elements[0][0] = right.x;
+		result.elements[1][0] = right.y;
+		result.elements[2][0] = right.z;
 
-    result.elements[0][2] = -forward.x;
-    result.elements[1][2] = -forward.y;
-    result.elements[2][2] = -forward.z;
-    result.elements[3][2] = veekay::vec3::dot(forward, position);
+		result.elements[0][1] = up.x;
+		result.elements[1][1] = up.y;
+		result.elements[2][1] = up.z;
 
-    result.elements[0][3] = 0.0f;
-    result.elements[1][3] = 0.0f;
-    result.elements[2][3] = 0.0f;
-    result.elements[3][3] = 1.0f;
+		result.elements[0][2] = -forward.x;
+		result.elements[1][2] = -forward.y;
+		result.elements[2][2] = -forward.z;
 
-    return result;
+		// NOTE: Set translation part (dot products with position)
+		result.elements[3][0] = -veekay::vec3::dot(right, position);
+		result.elements[3][1] = -veekay::vec3::dot(up, position);
+		result.elements[3][2] = veekay::vec3::dot(forward, position);
+
+		return result;
+	}
+	auto t = veekay::mat4::translation(-position);
+    auto rx = veekay::mat4::rotation({1, 0, 0}, toRadians(-rotation.x));
+    auto ry = veekay::mat4::rotation({0, 1, 0}, toRadians(-rotation.y - 180.0f));
+    auto rz = veekay::mat4::rotation({0, 0, 1}, toRadians(-rotation.z));
+    return t * rz * ry * rx;
 }
 
 veekay::mat4 Camera::view_projection(float aspect_ratio) const {
 	auto projection = veekay::mat4::projection(fov, aspect_ratio, near_plane, far_plane);
-
 	return view() * projection;
 }
 
@@ -812,8 +802,8 @@ void initialize(VkCommandBuffer cmd) {
 		.direction = {0.0f, 1.0f, 0.0f},  // Светит вверх
 		.color = {1.0f, 1.0f, 0.8f},      // Тёплый белый
 		.intensity = 50.0f,
-		.inner_cutoff = std::cos(toRadians(12.5f)),
-		.outer_cutoff = std::cos(toRadians(17.5f)),
+		.inner_cutoff = std::cos(toRadians(0.0f)),
+		.outer_cutoff = std::cos(toRadians(0.0f)),
 	});
 }
 
@@ -847,6 +837,39 @@ void shutdown() {
 void update(double time) {
     ImGui::Begin("Lighting Controls");
     
+    const char* mode_names[] = { "Look-At", "Transform" };
+    int current_mode = static_cast<int>(current_camera_mode);
+    
+    if (ImGui::Combo("Mode", &current_mode, mode_names, 2)) {
+        // NOTE: Save current state before switching
+        if (current_camera_mode == CameraMode::LookAt) {
+            saved_lookat_state.position = camera.position;
+            saved_lookat_state.rotation = camera.rotation;
+        } else {
+            saved_transform_state.position = camera.position;
+            saved_transform_state.rotation = camera.rotation;
+        }
+        
+        // NOTE: Switch mode
+        current_camera_mode = static_cast<CameraMode>(current_mode);
+        camera.is_look_at = (current_camera_mode == CameraMode::LookAt);
+        
+        // NOTE: Restore saved state for new mode
+        if (current_camera_mode == CameraMode::LookAt) {
+            camera.position = saved_lookat_state.position;
+            camera.rotation = saved_lookat_state.rotation;
+        } else {
+            camera.position = saved_transform_state.position;
+            camera.rotation = saved_transform_state.rotation;
+        }
+    }
+    
+    // NOTE: Display current rotation for debugging
+    ImGui::Text("Position: (%.2f, %.2f, %.2f)", camera.position.x, camera.position.y, camera.position.z);
+    ImGui::Text("Rotation: (%.2f, %.2f, %.2f)", camera.rotation.x, camera.rotation.y, camera.rotation.z);
+    ImGui::Separator();
+    
+
     // NOTE: Ambient light control
     static float ambient_intensity = 0.1f;
     ImGui::Text("Ambient Light");
@@ -901,30 +924,51 @@ void update(double time) {
     // NOTE: Spotlights control
     ImGui::Text("Spotlights");
 
+    // NOTE: Store per-spotlight angle state
+    static std::vector<std::pair<float, float>> spotlight_angles;
+    
+    // NOTE: Sync angles vector with spotlights vector
+    if (spotlight_angles.size() != spotlights.size()) {
+        spotlight_angles.resize(spotlights.size());
+        for (size_t i = 0; i < spotlights.size(); ++i) {
+            // NOTE: Convert cosine back to degrees, with clamping to prevent acos domain errors
+            float inner_cos = clamp(spotlights[i].inner_cutoff, 0.0f, 1.0f);
+            float outer_cos = clamp(spotlights[i].outer_cutoff, 0.0f, 1.0f);
+            spotlight_angles[i].first = std::acos(inner_cos) * 180.0f / float(M_PI);
+            spotlight_angles[i].second = std::acos(outer_cos) * 180.0f / float(M_PI);
+        }
+    }
+
     for (size_t i = 0; i < spotlights.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i + 1000)); // Offset ID to avoid collision
+        ImGui::PushID(static_cast<int>(i + 1000));
         
         if (ImGui::TreeNode("Spotlight", "Spotlight %zu", i)) {
             ImGui::SliderFloat3("Position", &spotlights[i].position.x, -10.0f, 10.0f);
             ImGui::SliderFloat3("Direction", &spotlights[i].direction.x, -1.0f, 1.0f);
+            spotlights[i].direction = veekay::vec3::normalized(spotlights[i].direction);
+            
             ImGui::ColorEdit3("Color", &spotlights[i].color.x);
             ImGui::SliderFloat("Intensity", &spotlights[i].intensity, 0.0f, 200.0f);
             
-            // NOTE: Angle controls (in degrees)
-            static float inner_angle = 12.5f;
-            static float outer_angle = 17.5f;
+            // NOTE: Use per-spotlight angle storage
+            float& inner_angle = spotlight_angles[i].first;
+            float& outer_angle = spotlight_angles[i].second;
             
-            if (ImGui::SliderFloat("Inner Angle", &inner_angle, 0.0f, 89.0f)) {
+            if (ImGui::SliderFloat("Inner Angle", &inner_angle, 0.0f, 45.0f)) {
                 spotlights[i].inner_cutoff = std::cos(toRadians(inner_angle));
-                if (outer_angle < inner_angle + 1.0f) outer_angle = inner_angle + 1.0f;
+                if (outer_angle < inner_angle + 1.0f) {
+                    outer_angle = inner_angle + 1.0f;
+                    spotlights[i].outer_cutoff = std::cos(toRadians(outer_angle));
+                }
             }
             
-            if (ImGui::SliderFloat("Outer Angle", &outer_angle, inner_angle + 1.0f, 90.0f)) {
+            if (ImGui::SliderFloat("Outer Angle", &outer_angle, inner_angle + 1.0f, 45.0f)) {
                 spotlights[i].outer_cutoff = std::cos(toRadians(outer_angle));
             }
             
             if (ImGui::Button("Remove")) {
                 spotlights.erase(spotlights.begin() + i);
+                spotlight_angles.erase(spotlight_angles.begin() + i);
                 ImGui::TreePop();
                 ImGui::PopID();
                 break;
@@ -945,6 +989,7 @@ void update(double time) {
             .inner_cutoff = std::cos(toRadians(12.5f)),
             .outer_cutoff = std::cos(toRadians(17.5f)),
         });
+        spotlight_angles.push_back({12.5f, 17.5f});
     }
     
     ImGui::Separator();
@@ -962,8 +1007,8 @@ void update(double time) {
         if (mouse::isButtonDown(mouse::Button::left)) {
             auto move_delta = mouse::cursorDelta();
 
-            camera.rotation.y -= move_delta.x * 0.2f;
-            camera.rotation.x -= move_delta.y * 0.2f;
+			camera.rotation.y -= move_delta.x * 0.2f;  // Инверсия для Transform
+			camera.rotation.x -= move_delta.y * 0.2f;
 
             constexpr float max_pitch = 90.0f;
             if (camera.rotation.x > max_pitch) camera.rotation.x = max_pitch;
@@ -972,9 +1017,16 @@ void update(double time) {
 
         auto view = camera.view();
         
-        veekay::vec3 right = {view.elements[0][0], view.elements[1][0], view.elements[2][0]};
-        veekay::vec3 up = {view.elements[0][1], view.elements[1][1], view.elements[2][1]};
-        veekay::vec3 front = {view.elements[0][2], view.elements[1][2], view.elements[2][2]};
+        veekay::vec3 right, up, front;
+        
+        right = {view.elements[0][0], view.elements[1][0], view.elements[2][0]};
+        up = {view.elements[0][1], view.elements[1][1], view.elements[2][1]};
+        front = {view.elements[0][2], view.elements[1][2], view.elements[2][2]};
+
+
+		// // NOTE: Project forward vector onto horizontal plane for WASD movement
+        // veekay::vec3 forward_horizontal = {front.x, 0.0f, front.z};
+        // forward_horizontal = veekay::vec3::normalized(forward_horizontal);
 
         if (keyboard::isKeyDown(keyboard::Key::w))
             camera.position += front * 0.1f;
