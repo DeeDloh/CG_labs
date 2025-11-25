@@ -105,7 +105,7 @@ struct Camera {
 	veekay::vec3 position = {};
 	veekay::vec3 rotation = {};
     veekay::vec3 target = {0.0f, -0.5f, 0.0f};
-    bool is_look_at = true;
+    // bool is_look_at = true;
 
 	float fov = default_fov;
 	float near_plane = default_near_plane;
@@ -187,7 +187,7 @@ veekay::mat4 Transform::matrix() const {
 }
 
 veekay::mat4 Camera::view() const {
-	if (is_look_at) {
+	if (current_camera_mode == CameraMode::LookAt) {
 		// NOTE: Calculate forward direction from pitch and yaw
 		float pitch = toRadians(rotation.x);
 		float yaw = toRadians(rotation.y);
@@ -852,7 +852,6 @@ void update(double time) {
         
         // NOTE: Switch mode
         current_camera_mode = static_cast<CameraMode>(current_mode);
-        camera.is_look_at = (current_camera_mode == CameraMode::LookAt);
         
         // NOTE: Restore saved state for new mode
         if (current_camera_mode == CameraMode::LookAt) {
