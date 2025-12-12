@@ -11,7 +11,7 @@ layout (binding = 0, std140) uniform SceneUniforms {
     float ambient_intensity;
     uint point_light_count;
     uint spotlight_count;
-    float _pad1;
+    float wave_offset;  // NOTE: Wave distortion offset
     
     vec3 light_direction;
     float _pad3;
@@ -29,6 +29,7 @@ layout (binding = 1, std140) uniform ModelUniforms {
     vec3 specular_color;
     float _pad1;
     float shininess;
+    uint apply_wave;  // NOTE: 1 = apply wave, 0 = no wave
 } object;
 
 struct PointLight {
@@ -58,16 +59,33 @@ layout (binding = 3, std430) readonly buffer SpotLights {
     Spotlight lights[];
 } spot_lights;
 
+layout (binding = 4) uniform sampler2D tex_sampler;
+
 void main() {
+    // NOTE: Wave distortion based on scene.wave_offset (only if apply_wave is set)
+    vec2 uv = f_uv;
+    
+    if (object.apply_wave == 1u) {
+        // Apply wave effect only for cube and back wall
+        float wave_amount = scene.wave_offset * 0.1;  // Scale the wave offset
+        float wave_x = sin(uv.y * 10.0 + wave_amount) * 0.05;
+        float wave_y = cos(uv.x * 10.0 + wave_amount) * 0.05;
+        uv += vec2(wave_x, wave_y);
+    }
+    
+    // Simple texture sampling with distortion
+    vec4 tex_color = texture(tex_sampler, uv);
+    vec3 albedo = tex_color.rgb * object.albedo_color;
+    
     vec3 normal = normalize(f_normal);
     vec3 view_dir = normalize(scene.camera_position - f_position);
 
     // NOTE: Ambient component
-    vec3 ambient = scene.ambient_intensity * object.albedo_color;
+    vec3 ambient = scene.ambient_intensity * albedo;
 
     // NOTE: Directional light - Diffuse component
     float diff = max(dot(normal, scene.light_direction), 0.0);
-    vec3 diffuse = diff * scene.light_intensity * scene.light_color * object.albedo_color;
+    vec3 diffuse = diff * scene.light_intensity * scene.light_color * albedo;
     
     // NOTE: Directional light - Specular component (Blinn-Phong)
     vec3 halfway_dir = normalize(scene.light_direction + view_dir);
@@ -83,12 +101,16 @@ void main() {
         float distance = length(light_dir);
         light_dir = normalize(light_dir);
         
+        // NOTE: Only light front-facing surfaces (prevent light from shining through solid objects)
+        float light_facing = dot(normal, light_dir);
+        if (light_facing <= 0.0) continue;
+        
         // NOTE: Attenuation (inverse square law with epsilon to avoid division by zero)
         float attenuation = light.intensity / (distance * distance + 0.01);
         
         // NOTE: Diffuse
-        float point_diff = max(dot(normal, light_dir), 0.0);
-        vec3 point_diffuse = point_diff * attenuation * light.color * object.albedo_color;
+        float point_diff = light_facing;
+        vec3 point_diffuse = point_diff * attenuation * light.color * albedo;
         
         // NOTE: Specular
         vec3 point_halfway = normalize(light_dir + view_dir);
@@ -107,6 +129,10 @@ void main() {
         float distance = length(light_dir);
         light_dir = normalize(light_dir);
         
+        // NOTE: Only light front-facing surfaces
+        float light_facing = dot(normal, light_dir);
+        if (light_facing <= 0.0) continue;
+        
         // NOTE: Check if fragment is within spotlight cone
         float theta = dot(light_dir, normalize(-light.direction));
         float epsilon = light.inner_cutoff - light.outer_cutoff;
@@ -119,8 +145,8 @@ void main() {
         float total_attenuation = attenuation * spot_intensity;
         
         // NOTE: Diffuse
-        float spot_diff = max(dot(normal, light_dir), 0.0);
-        vec3 spot_diffuse = spot_diff * total_attenuation * light.color * object.albedo_color;
+        float spot_diff = light_facing;
+        vec3 spot_diffuse = spot_diff * total_attenuation * light.color * albedo;
         
         // NOTE: Specular
         vec3 spot_halfway = normalize(light_dir + view_dir);
