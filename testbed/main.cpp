@@ -194,7 +194,7 @@ veekay::mat4 Camera::view() const {
 
 		veekay::vec3 forward{
 			std::sin(yaw),
-			-std::sin(pitch),
+			std::sin(pitch),
 			std::cos(yaw)
 		};
 		forward = veekay::vec3::normalized(forward);
@@ -1005,9 +1005,15 @@ void update(double time) {
 
         if (mouse::isButtonDown(mouse::Button::left)) {
             auto move_delta = mouse::cursorDelta();
-
+			//  if (current_camera_mode == CameraMode::LookAt) {
+            // 	camera.rotation.y -= move_delta.x * 0.2f;
+            // 	camera.rotation.x -= move_delta.y * 0.2f;
+        	// } else {
+            // 	camera.rotation.y -= move_delta.x * 0.2f;
+            // 	camera.rotation.x += move_delta.y * 0.2f;
+        	// }
 			camera.rotation.y -= move_delta.x * 0.2f;  // Инверсия для Transform
-			camera.rotation.x -= move_delta.y * 0.2f;
+			camera.rotation.x += move_delta.y * 0.2f;
 
             constexpr float max_pitch = 90.0f;
             if (camera.rotation.x > max_pitch) camera.rotation.x = max_pitch;
