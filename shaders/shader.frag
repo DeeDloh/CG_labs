@@ -3,11 +3,13 @@
 layout (location = 0) in vec3 f_position;
 layout (location = 1) in vec3 f_normal;
 layout (location = 2) in vec2 f_uv;
+layout (location = 3) in vec4 f_light_space_pos;
 
 layout (location = 0) out vec4 final_color;
 
 layout (binding = 0, std140) uniform SceneUniforms {
     mat4 view_projection;
+    mat4 light_view_projection; // Block 1: Light space matrix
     float ambient_intensity;
     uint point_light_count;
     uint spotlight_count;
@@ -58,6 +60,28 @@ layout (binding = 3, std430) readonly buffer SpotLights {
     Spotlight lights[];
 } spot_lights;
 
+layout (binding = 4) uniform sampler2DShadow shadow_map;
+
+float calculate_shadow(vec4 light_space_pos) {
+    // NOTE: Perform perspective divide
+    vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
+    
+    // NOTE: Transform from NDC [-1,1] to texture coordinates [0,1]
+    proj_coords = proj_coords * 0.5 + 0.5;
+    
+    // NOTE: If outside shadow map bounds or far plane, consider it lit
+    if (proj_coords.z > 1.0 || proj_coords.x < 0.0 || proj_coords.x > 1.0 || 
+        proj_coords.y < 0.0 || proj_coords.y > 1.0) {
+        return 1.0;
+    }
+    
+    // NOTE: Sample shadow map with built-in PCF (hardware filtering)
+    // sampler2DShadow expects (u, v, reference_depth)
+    float shadow = texture(shadow_map, proj_coords);
+    
+    return shadow;
+}
+
 void main() {
     vec3 normal = normalize(f_normal);
     vec3 view_dir = normalize(scene.camera_position - f_position);
@@ -65,14 +89,17 @@ void main() {
     // NOTE: Ambient component
     vec3 ambient = scene.ambient_intensity * object.albedo_color;
 
+    // NOTE: Calculate shadow factor
+    float shadow_factor = calculate_shadow(f_light_space_pos);
+    
     // NOTE: Directional light - Diffuse component
     float diff = max(dot(normal, scene.light_direction), 0.0);
-    vec3 diffuse = diff * scene.light_intensity * scene.light_color * object.albedo_color;
+    vec3 diffuse = shadow_factor * diff * scene.light_intensity * scene.light_color * object.albedo_color;
     
     // NOTE: Directional light - Specular component (Blinn-Phong)
     vec3 halfway_dir = normalize(scene.light_direction + view_dir);
     float spec = pow(max(dot(normal, halfway_dir), 0.0), object.shininess);
-    vec3 specular = spec * scene.light_intensity * scene.light_color * object.specular_color;
+    vec3 specular = shadow_factor * spec * scene.light_intensity * scene.light_color * object.specular_color;
     
     // NOTE: Point lights contribution
     vec3 point_lighting = vec3(0.0);
