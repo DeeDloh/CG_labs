@@ -15,8 +15,8 @@ endif()
 find_package(Vulkan REQUIRED)
 
 FetchContent_Declare(
-	lodepng
-	GIT_REPOSITORY https://github.com/lvandeve/lodepng
+		lodepng
+		GIT_REPOSITORY https://github.com/lvandeve/lodepng
 )
 
 FetchContent_MakeAvailable(lodepng)
@@ -24,11 +24,11 @@ FetchContent_MakeAvailable(lodepng)
 target_link_libraries(${PROJECT_NAME} veekay Vulkan::Headers)
 
 target_sources(${PROJECT_NAME} PRIVATE
-	${lodepng_SOURCE_DIR}/lodepng.cpp
+		${lodepng_SOURCE_DIR}/lodepng.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
-	${lodepng_SOURCE_DIR}
+		${lodepng_SOURCE_DIR}
 )
 
 # Compile shaders
@@ -42,10 +42,10 @@ if(GLSLC_FOUND)
 		set(SHADER_BINARY_PATH ${CMAKE_SOURCE_DIR}/shaders/${SHADER_BINARY})
 
 		add_custom_command(
-			OUTPUT ${SHADER_BINARY_PATH}
-			COMMAND glslc ${SHADER_SOURCE} -o ${SHADER_BINARY_PATH}
-			DEPENDS ${SHADER_SOURCE}
-			COMMENT "Compiling ${SHADER_FILE} shader"
+				OUTPUT ${SHADER_BINARY_PATH}
+				COMMAND glslc ${SHADER_SOURCE} -o ${SHADER_BINARY_PATH}
+				DEPENDS ${SHADER_SOURCE}
+				COMMENT "Compiling ${SHADER_FILE} shader"
 		)
 
 		list(APPEND _SHADER_BINARIES ${SHADER_BINARY_PATH})
@@ -56,7 +56,6 @@ if(GLSLC_FOUND)
 
 	compile_shader(shader.vert)
 	compile_shader(shader.frag)
-	compile_shader(shadow.vert)  # Block 3: Shadow pass shader
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
