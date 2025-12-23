@@ -1,164 +1,129 @@
 #version 450
 
+struct PointLight {
+    vec3 position;
+    float radius;
+    vec3 color;
+    float _pad00;
+};
+
+struct SpotLight {
+    vec3 position;
+    float radius;
+    vec3 direction;
+    float angle_cos;
+    vec3 color;
+    float _pad11;
+};
+
 layout (location = 0) in vec3 f_position;
 layout (location = 1) in vec3 f_normal;
 layout (location = 2) in vec2 f_uv;
-layout (location = 3) in vec4 f_light_space_pos;
+layout (location = 3) in vec4 f_shadow_position;
 
 layout (location = 0) out vec4 final_color;
 
-layout (binding = 0, std140) uniform SceneUniforms {
+layout(binding = 0, std140) uniform SceneUniforms {
     mat4 view_projection;
-    mat4 light_view_projection; // Block 1: Light space matrix
-    float ambient_intensity;
-    uint point_light_count;
-    uint spotlight_count;
-    float _pad1;
-    
-    vec3 light_direction;
-    float _pad3;
-    vec3 light_color;
-    float light_intensity;
-        
-    vec3 camera_position;
-    float _pad4;
+    mat4 shadow_projection;
+    vec3 view_position; float _pad0;
+    vec3 ambient_light_intensity; float _pad1;
+    vec3 sun_light_direction; float _pad2;
+    vec3 sun_light_color; float _pad3;
+    uint point_lights_count;
+    uint spot_lights_count;
+    uvec2 _pad4;
 } scene;
 
 layout (binding = 1, std140) uniform ModelUniforms {
     mat4 model;
-    vec3 albedo_color;
-    float _pad0;
-    vec3 specular_color;
-    float _pad1;
+    vec3 albedo_color; float _pad10;
+    vec3 specular_color; float _pad12;
     float shininess;
-} object;
+    uint _pad13[3];
+} model;
 
-struct PointLight {
-    vec3 position;
-    float _pad0;
-    vec3 color;
-    float intensity;
+layout(binding = 2, std430) readonly buffer PointLights {
+    PointLight point_lights[];
 };
 
-struct Spotlight {
-    vec3 position;
-    float _pad0;
-    vec3 direction;
-    float _pad1;
-    vec3 color;
-    float intensity;
-    float inner_cutoff;  // cos(inner_angle)
-    float outer_cutoff;  // cos(outer_angle)
-    float _pad2, _pad3;
+layout(binding = 3, std430) readonly buffer SpotLights {
+    SpotLight spot_lights[];
 };
 
-layout (binding = 2, std430) readonly buffer PointLights {
-    PointLight lights[];
-} point_lights;
+layout (binding = 4) uniform sampler2D albedo_texture;
 
-layout (binding = 3, std430) readonly buffer SpotLights {
-    Spotlight lights[];
-} spot_lights;
+layout (binding = 5) uniform sampler2DShadow shadow_texture;
 
-layout (binding = 4) uniform sampler2DShadow shadow_map;
+vec3 calculateBlinnPhong(vec3 lightDir, vec3 normal, vec3 viewDir, vec3 lightColor, vec4 albedo_texel) {
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = diff * albedo_texel.xyz * model.albedo_color * lightColor;
 
-float calculate_shadow(vec4 light_space_pos) {
-    // NOTE: Perform perspective divide
-    vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
-    
-    // NOTE: Transform from NDC [-1,1] to texture coordinates [0,1]
-    proj_coords = proj_coords * 0.5 + 0.5;
-    
-    // NOTE: If outside shadow map bounds or far plane, consider it lit
-    if (proj_coords.z > 1.0 || proj_coords.x < 0.0 || proj_coords.x > 1.0 || 
-        proj_coords.y < 0.0 || proj_coords.y > 1.0) {
-        return 1.0;
-    }
-    
-    // NOTE: Sample shadow map with built-in PCF (hardware filtering)
-    // sampler2DShadow expects (u, v, reference_depth)
-    float shadow = texture(shadow_map, proj_coords);
-    
-    return shadow;
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normal, halfwayDir), 0.0), model.shininess);
+    vec3 specular = spec * model.specular_color * lightColor;
+
+    return diffuse + specular;
 }
 
 void main() {
     vec3 normal = normalize(f_normal);
-    vec3 view_dir = normalize(scene.camera_position - f_position);
+    vec3 viewDir = normalize(scene.view_position - f_position);
 
-    // NOTE: Ambient component
-    vec3 ambient = scene.ambient_intensity * object.albedo_color;
+    vec4 albedo_texel = texture(albedo_texture, f_uv);
 
-    // NOTE: Calculate shadow factor
-    float shadow_factor = calculate_shadow(f_light_space_pos);
-    
-    // NOTE: Directional light - Diffuse component
-    float diff = max(dot(normal, scene.light_direction), 0.0);
-    vec3 diffuse = shadow_factor * diff * scene.light_intensity * scene.light_color * object.albedo_color;
-    
-    // NOTE: Directional light - Specular component (Blinn-Phong)
-    vec3 halfway_dir = normalize(scene.light_direction + view_dir);
-    float spec = pow(max(dot(normal, halfway_dir), 0.0), object.shininess);
-    vec3 specular = shadow_factor * spec * scene.light_intensity * scene.light_color * object.specular_color;
-    
-    // NOTE: Point lights contribution
-    vec3 point_lighting = vec3(0.0);
-    for (uint i = 0; i < scene.point_light_count; ++i) {
-        PointLight light = point_lights.lights[i];
-        
-        vec3 light_dir = light.position - f_position;
-        float distance = length(light_dir);
-        light_dir = normalize(light_dir);
-        
-        // NOTE: Attenuation (inverse square law with epsilon to avoid division by zero)
-        float attenuation = light.intensity / (distance * distance + 0.01);
-        
-        // NOTE: Diffuse
-        float point_diff = max(dot(normal, light_dir), 0.0);
-        vec3 point_diffuse = point_diff * attenuation * light.color * object.albedo_color;
-        
-        // NOTE: Specular
-        vec3 point_halfway = normalize(light_dir + view_dir);
-        float point_spec = pow(max(dot(normal, point_halfway), 0.0), object.shininess);
-        vec3 point_specular = point_spec * attenuation * light.color * object.specular_color;
-        
-        point_lighting += point_diffuse + point_specular;
+    vec3 shadow_coord = f_shadow_position.xyz / f_shadow_position.w;
+    shadow_coord.xy = shadow_coord.xy * 0.5 + 0.5;
+    shadow_coord.z = shadow_coord.z;
+    float shadow_factor = texture(shadow_texture, shadow_coord);
+
+    vec3 result = albedo_texel.xyz * model.albedo_color * scene.ambient_light_intensity;
+
+    vec3 sunLightDir = normalize(-scene.sun_light_direction);
+    result += shadow_factor * calculateBlinnPhong(sunLightDir, normal, viewDir, scene.sun_light_color, albedo_texel);
+
+    for (uint i = 0u; i < scene.point_lights_count; i++) {
+        PointLight light = point_lights[i];
+        vec3 lightDir = normalize(light.position - f_position);
+        float distance = length(light.position - f_position);
+
+        if (distance > light.radius) continue;
+
+		float ndotl = dot(normal, lightDir);
+    	if (ndotl <= 0.0) continue;
+
+        float attenuation = 1.0 - (distance / max(light.radius, 0.0001));
+        attenuation *= attenuation;
+
+        vec3 lighting = calculateBlinnPhong(lightDir, normal, viewDir, light.color, albedo_texel);
+        result += lighting * attenuation;
     }
 
-    // NOTE: Spotlights contribution
-    vec3 spotlight_lighting = vec3(0.0);
-    for (uint i = 0; i < scene.spotlight_count; ++i) {
-        Spotlight light = spot_lights.lights[i];
-        
-        vec3 light_dir = light.position - f_position;
-        float distance = length(light_dir);
-        light_dir = normalize(light_dir);
-        
-        // NOTE: Check if fragment is within spotlight cone
-        float theta = dot(light_dir, normalize(-light.direction));
-        float epsilon = light.inner_cutoff - light.outer_cutoff;
-        float spot_intensity = clamp((theta - light.outer_cutoff) / epsilon, 0.0, 1.0);
-        
-        // NOTE: Distance attenuation
-        float attenuation = light.intensity / (distance * distance + 0.01);
-        
-        // NOTE: Combine spot and distance attenuation
-        float total_attenuation = attenuation * spot_intensity;
-        
-        // NOTE: Diffuse
-        float spot_diff = max(dot(normal, light_dir), 0.0);
-        vec3 spot_diffuse = spot_diff * total_attenuation * light.color * object.albedo_color;
-        
-        // NOTE: Specular
-        vec3 spot_halfway = normalize(light_dir + view_dir);
-        float spot_spec = pow(max(dot(normal, spot_halfway), 0.0), object.shininess);
-        vec3 spot_specular = spot_spec * total_attenuation * light.color * object.specular_color;
-        
-        spotlight_lighting += spot_diffuse + spot_specular;
+    for (uint i = 0u; i < scene.spot_lights_count; i++) {
+        SpotLight light = spot_lights[i];
+        vec3 lightDir = normalize(light.position - f_position);
+        float distance = length(light.position - f_position);
+
+        if (distance > light.radius) continue;
+
+		float ndotl = dot(normal, lightDir);
+    	if (ndotl <= 0.0) continue;
+
+        float cosTheta = dot(lightDir, normalize(-light.direction));
+        if (cosTheta < light.angle_cos) continue;
+
+        float distanceAttenuation = 1.0 - (distance / max(light.radius, 0.0001));
+        distanceAttenuation *= distanceAttenuation;
+
+        float softEdge = 0.1;
+        float angleAttenuation = clamp((cosTheta - light.angle_cos) / softEdge, 0.0, 1.0);
+
+        vec3 lighting = calculateBlinnPhong(lightDir, normal, viewDir, light.color, albedo_texel);
+        result += lighting * distanceAttenuation * angleAttenuation;
     }
 
-    // NOTE: Combine all lighting
-    vec3 result = ambient + diffuse + specular + point_lighting + spotlight_lighting;
-    
+    if (result.x > 1.0) result.x = 1.0;
+    if (result.y > 1.0) result.y = 1.0;
+    if (result.z > 1.0) result.z = 1.0;
     final_color = vec4(result, 1.0);
 }
